@@ -18,20 +18,6 @@ deployment's `POST /v1/ingest/traces`, no agent involved). This package
 exists for everyone else: PHP 5.6 through 8.0, which describes a lot of
 real production code that can't be upgraded on demand.
 
-## Why pure PHP, not a native extension
-
-Datadog's `dd-trace-php` gets real auto-instrumentation by compiling
-against PHP's internal Zend Engine ABI — but that ABI changed hard between
-PHP 5.x and 7.x, so supporting "PHP 5.6 and up" with one extension means
-either a maze of per-version branches or genuinely separate builds, plus
-prebuilt binaries per PHP version × OS × architecture. That's a dedicated
-team's full-time project, disproportionate to an SDK side feature — and it
-fights the actual deployment reality of "still running PHP 5.6" software:
-locked-down shared hosting or legacy enterprise servers where installing a
-compiled `.so` often isn't possible at all. A single PHP file with no
-compiled artifact installs anywhere a `require` or `composer require`
-does.
-
 ## tracing — HTTP request tracing
 
 There's no PHP-wide equivalent of a `Middleware` wrapping one shared
@@ -44,7 +30,7 @@ the very end:
 ```php
 use Miniargus\Tracing\Tracer;
 
-$tracer = new Tracer('checkout-api'); // service name -- every app should set its own
+$tracer = new Tracer('service-name'); // service name -- every app should set its own
 
 $root = $tracer->startRequestSpan(); // reads method/path from $_SERVER by default
 
