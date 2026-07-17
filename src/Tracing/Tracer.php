@@ -18,10 +18,30 @@ class Tracer
 {
     const DEFAULT_AGENT_ADDR = '127.0.0.1:8126';
 
+    /**
+     * Bounds the captured query_string tag -- matches miniargus's existing
+     * precedent for "a reasonable captured-string snippet length" (see the
+     * agent's Postgres query_samples check, defaultQuerySampleMaxLength = 2048).
+     */
+    const QUERY_STRING_MAX_LENGTH = 2048;
+
+    /**
+     * Matches query parameter names that commonly carry secrets --
+     * passwords, tokens, API keys, session ids, auth headers passed as
+     * params, signed URLs. Mirrors the spirit of Datadog APM's
+     * DD_TRACE_OBFUSCATION_QUERY_STRING_REGEXP default: redact by key
+     * name, not a denylist of exact values, since the set of secrets an
+     * app might pass is unbounded but the *shape* of the parameter name
+     * that carries one is fairly predictable.
+     */
+    const SENSITIVE_QUERY_KEY_PATTERN = '/pass|pwd|secret|token|key|auth|session|credential|signature/i';
+
     /** @var string */
     private $service;
     /** @var string */
     private $agentAddr;
+    /** @var bool */
+    private $captureQueryString;
     /** @var resource|null */
     private $socket;
     /** @var bool */
@@ -30,18 +50,37 @@ class Tracer
     private $stack = array();
 
     /**
-     * @param string $service     tags every span from this process; every
-     *                            application should set its own name --
-     *                            it's what distinguishes one app from
-     *                            another in miniargus's traces table.
-     * @param string $agentAddr   "host:port" of the agent's UDP trace
-     *                            listener; default matches the agent's own
-     *                            default.
+     * @param string $service            tags every span from this process;
+     *                                   every application should set its
+     *                                   own name -- it's what distinguishes
+     *                                   one app from another in miniargus's
+     *                                   traces table.
+     * @param string $agentAddr          "host:port" of the agent's UDP
+     *                                   trace listener; default matches
+     *                                   the agent's own default.
+     * @param bool   $captureQueryString captures the request's raw query
+     *                                   string as the root span's
+     *                                   "query_string" tag -- off by
+     *                                   default, since query strings
+     *                                   routinely carry session tokens,
+     *                                   emails, or other PII that path was
+     *                                   deliberately kept free of.
+     *                                   Suspicious-looking values are
+     *                                   redacted before the span ever
+     *                                   leaves this process -- see
+     *                                   redactQueryString(). This
+     *                                   client-side redaction is
+     *                                   best-effort minimization, not the
+     *                                   safety boundary: miniargus's own
+     *                                   ingestion API re-applies the same
+     *                                   redaction server-side regardless
+     *                                   of what this SDK sends.
      */
-    public function __construct($service, $agentAddr = self::DEFAULT_AGENT_ADDR)
+    public function __construct($service, $agentAddr = self::DEFAULT_AGENT_ADDR, $captureQueryString = false)
     {
         $this->service = $service;
         $this->agentAddr = $agentAddr;
+        $this->captureQueryString = $captureQueryString;
     }
 
     /**
@@ -73,8 +112,46 @@ class Tracer
         $span->setHttpMethod($method);
         $span->setHttpPath($path);
 
+        if ($this->captureQueryString) {
+            $queryString = isset($_SERVER['QUERY_STRING']) ? $_SERVER['QUERY_STRING'] : '';
+            if ($queryString !== '') {
+                $span->setTag('query_string', self::redactQueryString($queryString));
+            }
+        }
+
         $this->stack[] = $span;
         return $span;
+    }
+
+    /**
+     * Replaces the value of every key=value pair whose key looks
+     * sensitive with a fixed "<redacted>" placeholder, leaving everything
+     * else -- parameter order, encoding, bare flags with no value --
+     * untouched, then truncates the result to QUERY_STRING_MAX_LENGTH.
+     * Operates on the raw (still percent-encoded) string rather than
+     * parse_str/http_build_query, which would lose repeated-key ordering
+     * and re-escape everything -- undesirable for a value whose only
+     * purpose is human-readable debugging context on a span. Mirrors
+     * ma-go's tracing.redactQueryString exactly.
+     *
+     * @param string $raw
+     * @return string
+     */
+    private static function redactQueryString($raw)
+    {
+        $pairs = explode('&', $raw);
+        foreach ($pairs as $i => $pair) {
+            $eqPos = strpos($pair, '=');
+            if ($eqPos === false) {
+                continue;
+            }
+            $rawKey = substr($pair, 0, $eqPos);
+            $key = urldecode($rawKey);
+            if (preg_match(self::SENSITIVE_QUERY_KEY_PATTERN, $key)) {
+                $pairs[$i] = $rawKey . '=<redacted>';
+            }
+        }
+        return substr(implode('&', $pairs), 0, self::QUERY_STRING_MAX_LENGTH);
     }
 
     /**
