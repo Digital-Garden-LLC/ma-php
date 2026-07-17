@@ -83,6 +83,74 @@ class TracerTest extends \PHPUnit_Framework_TestCase
         unset($_SERVER['REQUEST_METHOD'], $_SERVER['REQUEST_URI']);
     }
 
+    public function testStartRequestSpan_WithQueryStringCapture_CapturesRawQuery()
+    {
+        $_SERVER['QUERY_STRING'] = 'page=2&sort=price';
+        $tracer = new Tracer('checkout-api', $this->collectorAddr, true);
+
+        $span = $tracer->startRequestSpan('GET', '/search');
+        $span->finish();
+
+        $got = $this->recv();
+        $this->assertSame('page=2&sort=price', $got['tags']['query_string']);
+
+        unset($_SERVER['QUERY_STRING']);
+    }
+
+    public function testStartRequestSpan_DefaultDoesNotCaptureQueryString()
+    {
+        $_SERVER['QUERY_STRING'] = 'page=2';
+        $tracer = new Tracer('checkout-api', $this->collectorAddr);
+
+        $span = $tracer->startRequestSpan('GET', '/search');
+        $span->finish();
+
+        $got = $this->recv();
+        $this->assertArrayNotHasKey('tags', $got);
+
+        unset($_SERVER['QUERY_STRING']);
+    }
+
+    public function testStartRequestSpan_WithQueryStringCapture_NoQueryStringPresent_TagAbsent()
+    {
+        unset($_SERVER['QUERY_STRING']);
+        $tracer = new Tracer('checkout-api', $this->collectorAddr, true);
+
+        $span = $tracer->startRequestSpan('GET', '/search');
+        $span->finish();
+
+        $got = $this->recv();
+        $this->assertArrayNotHasKey('tags', $got);
+    }
+
+    public function testStartRequestSpan_WithQueryStringCapture_RedactsSensitiveValues()
+    {
+        $_SERVER['QUERY_STRING'] = 'page=2&token=abc123';
+        $tracer = new Tracer('checkout-api', $this->collectorAddr, true);
+
+        $span = $tracer->startRequestSpan('GET', '/search');
+        $span->finish();
+
+        $got = $this->recv();
+        $this->assertSame('page=2&token=<redacted>', $got['tags']['query_string']);
+
+        unset($_SERVER['QUERY_STRING']);
+    }
+
+    public function testStartRequestSpan_WithQueryStringCapture_TruncatesAtMaxLength()
+    {
+        $_SERVER['QUERY_STRING'] = str_repeat('a=1&', 1000);
+        $tracer = new Tracer('checkout-api', $this->collectorAddr, true);
+
+        $span = $tracer->startRequestSpan('GET', '/search');
+        $span->finish();
+
+        $got = $this->recv();
+        $this->assertSame(2048, strlen($got['tags']['query_string']));
+
+        unset($_SERVER['QUERY_STRING']);
+    }
+
     public function testStartRequestSpan_HonorsIncomingTraceparent()
     {
         $_SERVER['HTTP_TRACEPARENT'] = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';

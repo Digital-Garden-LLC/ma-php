@@ -50,6 +50,23 @@ one — and the reverse works too: this SDK's spans carry the same
 `trace_id`/`span_id`/`parent_id` shape, so a PHP monolith calling into a
 Go microservice (or vice versa) produces one connected trace end to end.
 
+`Tracer`'s third constructor argument opts into capturing the request's
+raw query string as the root span's `query_string` tag:
+
+```php
+$tracer = new Tracer('service-name', Tracer::DEFAULT_AGENT_ADDR, true);
+```
+
+**Off by default** — query strings routinely carry session tokens, emails,
+or other PII that `path` was deliberately kept free of. Suspicious-looking
+values (keys matching `password`/`token`/`secret`/`key`/`auth`/`session`/
+`credential`/`signature`) are redacted to `<redacted>` before the span
+ever leaves this process, and the captured value is truncated to 2048
+bytes. This client-side redaction is best-effort minimization, not the
+safety boundary — miniargus's own ingestion API re-applies the same
+redaction server-side regardless of what this SDK sends. See miniargus's
+SETUP.md Step 5 for the full rationale.
+
 ### Zero application code changes via `auto_prepend_file`
 
 The closest thing to automatic instrumentation without a compiled
